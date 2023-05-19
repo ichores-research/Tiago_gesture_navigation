@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+"""
+Skript slouzici jako server zpracovavajici obrazova data z robota pomoci MediaPipe
+"""
 import sys
 import rospy
 import cv2
@@ -6,6 +10,7 @@ import mediapipe.python as mp
 import numpy as np
 import magic
 import base64
+import argparse
 
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
@@ -13,19 +18,24 @@ from sensor_msgs.msg import Image
 from image_share_service.service_server import ServiceServer
 from classes import LocationPoint, HumanInfo
 
+OUT_PATH = "/home/guest/image_recog_results/"
 
-ROBOT_HEIGHT = 1.126886 # hodnota vysky hlavy robota v zakladni poloze ze simulace
-HUMAN_ARM_BODY_RATIO = 0.6
 
-mp_drawing = None
-mp_pose = None    
+ROBOT_HEIGHT = 1.126886 # hodnota vysky hlavy robota v zakladni poloze ze simulace   
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--debug', type=bool, default=False, help='emables saving of partial results from MediaPipe')
+    opts = parser.parse_args()
+    return opts
+
 
 def init_mediapipe():
     mp_drawing = mp.solutions.drawing_utils
-    #mp_drawing_styles = mp.solutions.drawing_styles
     mp_pose = mp.solutions.pose
 
-    return mp_drawing, mp_pose # mp_drawing_styles, mp_pose
+    return mp_drawing, mp_pose
 
 def find_human_in_image_by_mediapipe(human_info, cv2_img):
     """
@@ -37,6 +47,7 @@ def find_human_in_image_by_mediapipe(human_info, cv2_img):
     human_info.human_centered = False
     human_info.center_location.x = None
     human_info.center_location.y = None
+    human_info.distance_from_robot = None
     human_info.final_robot_rotation.x = None
     human_info.final_robot_rotation.y = None
     with mp_pose.Pose(
@@ -57,6 +68,16 @@ def find_human_in_image_by_mediapipe(human_info, cv2_img):
         human_info.human_found = True
         get_human_center_location(results, human_info)
         get_needed_robot_rotation(human_info)
+
+        if args.debug:
+            # Draw pose landmarks on the image.
+            annotated_image = image.copy()
+            mp_drawing.draw_landmarks(
+                annotated_image,
+                results.pose_landmarks,
+                mp_pose.POSE_CONNECTIONS)
+            cv2.imwrite(OUT_PATH + "vis/human_mediapipe.jpg", annotated_image)
+
         return
 
 def get_human_center_location(results, human_info):
@@ -95,26 +116,10 @@ def get_needed_robot_rotation(human_info):
     human_info.final_robot_rotation.x = (-pos_x*(60))
     human_info.final_robot_rotation.y = (-pos_y*(49.5))
 
-    print("Rotations needed to center on human:\nhor_rotation = %f\nver_rotation = %f" % (human_info.final_robot_rotation.x, human_info.final_robot_rotation.y))
+    rospy.loginfo("Rotations needed to center on human:\nhor_rotation = %f\nver_rotation = %f" % (human_info.final_robot_rotation.x, human_info.final_robot_rotation.y))
 
     return 
 
-
-def create_human_info_msg(human_info):
-    """
-    Funkce vytvarejici string pro odeslani do hlavniho skriptu, ktery obsahuje informace o poloze cloveka a potrebne rotaci
-    Format zpravy je nasledujici:
-    "human_info.human_found,human_info.human_centered,human_info.final_robot_rotation.x,human_info.final_robot_rotation.y"
-    """
-    humam_info_message = ",".join([str(human_info.is_found()), str(human_info.is_centered()), str(human_info.final_robot_rotation.x), str(human_info.final_robot_rotation.y)])
-    return humam_info_message
-
-def str_msg_publisher(pub, str_msg):
-    """
-    Talker ktery vysila zpravu do kanalu chatter s daty pro pohyb robota
-    """
-    rospy.loginfo("Odesilana zprava je:\n%s" % str_msg)
-    pub.publish(str_msg)
 
 def callback_image_server(stuff:dict):
     """
@@ -129,6 +134,8 @@ def callback_image_server(stuff:dict):
     results_dict = {
         "human_found": human_info.human_found,
         "human_centered": human_info.human_centered,
+        "human_center_x": human_info.center_location.x,
+        "human_center_y": human_info.center_location.y,
         "final_robot_rotation.x": human_info.final_robot_rotation.x,
         "final_robot_rotation.y": human_info.final_robot_rotation.y,
         "Hello": "ROS",
@@ -139,22 +146,13 @@ def callback_image_server(stuff:dict):
 if __name__ == '__main__':
     mp_drawing, mp_pose =  init_mediapipe()
 
-    #pub = rospy.Publisher('tiago_left_wrist_position', String, queue_size=10)
+    args = parse_args()
+
     rospy.init_node('human_image_position_talker', anonymous=True)
     pub_human_info = rospy.Publisher('human_info_cmd', String, queue_size=10)
-    #IMAGES = ["step0.jpg", "step1.jpg", "step2.jpg", "step3.jpg", "step4.jpg", "step5.jpg", "step6.jpg", "step7.jpg"]
     human_info = HumanInfo()
     image_server = ServiceServer(callback_image_server)
     rospy.loginfo("Image server running. waiting for imput image...")
-    """ for image_file in IMAGES:
-        rospy.loginfo("Processing image file: %s" % image_file)
-        cv2_img = cv2.imread('/home/guest/tiago_dual_public_ws/src/python_control_testing_functions/tmp/' + image_file)
-        find_human_in_image_by_mediapipe(mp_pose, cv2_img, human_info)
-        human_info_msg = create_human_info_msg(human_info)
-        str_msg_publisher(pub_human_info, human_info_msg)
-    rospy.spin() 
-    """
+
     rospy.spin()
     
-
-        

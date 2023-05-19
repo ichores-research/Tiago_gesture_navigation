@@ -1,7 +1,17 @@
 #!/usr/bin/env python
-# license removed for brevity
-# Skript testujici ruzne vytvorene moduly pro ovladani robota Tiago++ v simulaci Gazeboo
-# mozne ovladat ruku pomoci MoveIt planneru, zakladnu robota s pouzitim odometrie a otaceni hlavy robota pro hledani cloveka
+
+"""
+Main script containing functions for controlling individual parts of TIAGo++ robot, communication channels
+for sharing image data and info about human, communication with robot via ros topics
+and also contains a few demo programs accesed by optional launch argument --demo
+
+List of demo programs: 
+(usage: --demo <demo_name>)
+- move_head: Program moves only the head of a robot, turns it to several positions and then back to the initial position
+- rotate_base: Robot rotates on place to 45 degrees to both directions and then to initial direction
+- move_forward_and_back: Robot moves 1 meter forwars, turns around, moves one meter back and turns back. 
+- watch_human - Robot tries to find human in its workspace, then tries to keep him in his field of view
+"""
 import rospy
 import cv2
 import threading
@@ -12,11 +22,10 @@ import os
 import numpy as np
 import argparse
 
-
 from math import radians, degrees, atan2, sqrt, pow, pi, sin, cos
 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from geometry_msgs.msg import Pose, Quaternion, Point, Twist
+from geometry_msgs.msg import Pose, Quaternion, Point, Twist, TransformStamped
 from std_msgs.msg import String
 from sensor_msgs.msg import Image, JointState, CameraInfo
 from control_msgs.msg import FollowJointTrajectoryAction, JointTolerance
@@ -25,37 +34,79 @@ from nav_msgs.msg import Odometry
 
 from actionlib.simple_action_client import SimpleActionClient
 
+import tf
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+from tf.listener import TransformListener
 
 from cv_bridge import CvBridge, CvBridgeError
 
 from image_share_service.service_client import ServiceClient
 from classes import LocationPoint, HumanInfo, Location3DJoint
 
-
 bridge = CvBridge()
 look_at_image = False
 
-# Promenne dejinujici pocatecni pootoceni ruky robota pro prihodne vychozi postaveni
-ROT_Y_CALIBRATION = -30
-ROT_Y_STARTPOSE = 180
-ROT_Z_STARTPOSE = 180
-
-# slovnik meznich hodnot uhlu urcitych ovladanych kloubu
+# Dictionary of angle limit on certain robot joints, not used
 ROBOT_JOINTS_MAX_VALUES_RADIANS = {
-    "arm_left_1_joint": (-1.11, 1.50),
-    "arm_left_2_joint": (-1.11, 1.50),
-    "arm_left_3_joint": (-0.72, 3.86),
-    "arm_left_4_joint": (-0.32, 2.29),
-    "arm_left_5_joint": (-2.07, 2.07),
-    "arm_left_6_joint": (-1.39, 1.39),
-    "arm_left_7_joint": (-2.07, 2.07),
     "head_1_joint": (-1.24, 1.24),
     "head_2_joint": (-0.98, 0.72),
 }
+
 OUT_PATH = "/home/guest/image_recog_results/"
 
-CAMERA_RESOLUTION = (640, 480)
+class Camera:
+    """
+    Class with information on used camera in the robot
+    """
+    def __init__(self):
+        """
+        Info is obtained from topic provided by the robot
+        """
+        self.camera_info_msg = rospy.wait_for_message("/xtion/rgb/camera_info", CameraInfo)
+        self.fx_ = self.camera_info_msg.K[0]
+        self.fy_ = self.camera_info_msg.K[4]
+        self.cx_ = self.camera_info_msg.K[2]
+        self.cy_ = self.camera_info_msg.K[5]
+        self.w_ = self.camera_info_msg.width
+        self.h_ = self.camera_info_msg.height
+        tf_listener.waitForTransform("/xtion_rgb_optical_frame", "/base_footprint", time=rospy.Time(0), timeout=rospy.Duration(5,0))
+
+    def find_distance_to_human(self, human_center_location):
+        """
+        Function that finds distance from robot base to human from depth image
+        Result: distance parameter written to human_info object.
+        """
+        if human_center_location.x == None or human_center_location.y == None :
+            print("No human in the picture")
+            return
+        
+        # Pixel coordinates of human in the picture.
+        pixel_x = int(round(human_center_location.x * self.w_))
+        pixel_y = int(round(human_center_location.y * self.h_))
+        
+        # Reading distance data on position of the center of human in depth image.
+        depth_image_message = rospy.wait_for_message("/xtion/depth_registered/image_raw", Image)
+        depth_image = image_converter.bridge.imgmsg_to_cv2(depth_image_message, desired_encoding="passthrough")
+        distance = depth_image[pixel_y][pixel_x]
+
+        # Camera coordinate frame offset in 2D from base_link
+        try:
+            [trans, rot] = tf_listener.lookupTransform("/xtion_rgb_optical_frame", "/base_footprint", rospy.Time(0))
+        except tf.LookupException or tf.ConnectivityException or tf.ExtrapolationException as e:
+            rospy.logerr("Error while looking for transformation: %s" % e)
+            return
+        
+        camera_offset = sqrt(pow(trans[0], 2) + pow(trans[2], 2))
+        distance += camera_offset
+        rospy.loginfo("Distance of human from the robot: %f" % distance)
+        human_info.distance_from_robot = distance
+
+    def get_camera_info(self):
+        """
+        Function that prints the CameraInfo message with all camera parameters 
+        """
+        rospy.loginfo("Camera information:\n%s" % self.camera_info_msg)
+
 
 class ImageConverter:
     """
@@ -68,24 +119,26 @@ class ImageConverter:
         self.last_saved_image = None
         self.last_image_buffer = None
         self.camera_resolution = None
-        self.thread = threading.Thread(target=self.image_listener)
-        self.thread.start()
+
+        self.image_thread = threading.Thread(target=self.image_listener)
+        self.image_thread.start()
 
     def image_listener(self):
         rospy.Subscriber("/xtion/rgb/image_raw", Image, self.callback_image)
         rospy.spin()
 
-    def camera_info_listener(self):
-        rospy.Subscriber("/xtion/rgb/camera_info", CameraInfo, self.callback_camera_info)
-        rospy.spin()
-
     def callback_image(self,data):
+        """
+        Callback function called when new image was received
+        """
         if not self.get_look_at_image():
             return
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(data) # "bgr8"
+            cv_image = self.bridge.imgmsg_to_cv2(data)
         except CvBridgeError as e:
             rospy.loginfo(e)
+
+        # Transforming image to string for sending it to other running programs
         encoded, image_buffer = cv2.imencode(".jpg", cv_image)
         image_as_txt = base64.b64encode(image_buffer)
         self.lock.acquire()
@@ -93,13 +146,6 @@ class ImageConverter:
         self.last_image_as_txt = image_as_txt
         self.look_at_image = False
         self.lock.release()
-        #cv2.imshow("Image window", cv_image)
-        #cv2.waitKey(0)
-        
-        #cv2.destroyAllWindows()
-        #annotated_image = cv_image.copy()
-        #cv2.imwrite('/home/guest/tiago_dual_public_ws/src/python_control_testing_functions/tmp/step' + str(data.header.stamp) + ".jpg", annotated_image)
-
 
     def get_last_saved_image(self):
         self.lock.acquire()
@@ -121,7 +167,7 @@ class ImageConverter:
     
     def set_look_at_image(self, value):
         """
-        Funkce nastavujici promennou look_at_image na bool hodnotu value
+        Sets variable look_at_image to bool value
         """
         self.lock.acquire()
         self.look_at_image = value
@@ -129,7 +175,9 @@ class ImageConverter:
 
     def get_current_view(self, show=False, save=False, filename=None):
         """
-        Funkce vykreslujici aktualni pohled z kamery robota pomoci cv2.
+        Function for visualising or saving current image from robot camera.
+        Input:  show - if True, shows image window with latest image
+                save - if True, saves current image to OUT_PATH with name <filename>
         """
         self.set_look_at_image(True)
         while(self.get_look_at_image()):
@@ -153,10 +201,9 @@ class ImageConverter:
 
 class LatestJointStates:
     """
-    Trida s listenerem posledniho stavu kloubu
+    Class with listener to last joints positions topic
     """
     def __init__(self):
-        #rospy.init_node('joint_states_listener')
         self.lock = threading.Lock()
         self.name = []
         self.position = []
@@ -165,12 +212,10 @@ class LatestJointStates:
         self.thread = threading.Thread(target=self.joint_states_listener)
         self.thread.start()
         
-
     #thread function: listen for joint_states messages
     def joint_states_listener(self):
         rospy.Subscriber('joint_states', JointState, self.joint_states_callback)
         rospy.spin()
-
 
     #callback function: when a joint_states message arrives, save the values
     def joint_states_callback(self, msg):
@@ -180,7 +225,6 @@ class LatestJointStates:
         self.velocity = msg.velocity
         self.effort = msg.effort
         self.lock.release()
-
 
     #returns (found, position, velocity, effort) for the joint joint_name 
     #(found is 1 if found, 0 otherwise)
@@ -209,7 +253,7 @@ class LatestJointStates:
     
     def return_head_joints_positions(self):
         """
-        Metoda vracejici polohy kloubu v hlave robota v radianech.
+        Returns only positions of both joints in robot head
         """
         head_1_joint_pos = self.return_joint_state("head_1_joint")[1]
         head_2_joint_pos = self.return_joint_state("head_2_joint")[1]
@@ -219,8 +263,8 @@ class LatestJointStates:
 
 class BasePositionWithOrientation():
     """
-    Skupina promennych reprezentujici aktualni polohu zakladny robota, vcetne jejiho natoceni
-    v prubehu jejiho pohybu vztazenou k pocatecnimu mistu pohybu.
+    Class representing current position and orientation of robot base
+    data are actualised and are expressed in odom coordinate system
     - position_x: x-ova souradnice zakladny v metrech
     - position_y: y-ova souradnice zakladny v metrech
     - rotation: rotace zakladny v radianech
@@ -473,13 +517,15 @@ def analyze_picture_with_mediapipe(step=None):
     human_info.human_centered = results["human_centered"]
     human_info.final_robot_rotation.x = results["final_robot_rotation.x"]
     human_info.final_robot_rotation.y = results["final_robot_rotation.y"]
+    human_info.center_location.x = results["human_center_x"]
+    human_info.center_location.y = results["human_center_y"]
 
 
 def analyze_picture_with_alphapose():
     """
-    Funkce odesilajici aktualni snimek z robota pro zpracovani pomoci AlphaPose
+    Function that sends current image from robot to AlphaPose image server
     """
-    rospy.loginfo("Zahajeni analyzy obrazu pomoci AlphaPose...")
+    rospy.loginfo("Start of the image analysis via AlphaPose...")
     image_converter.set_look_at_image(True)
     while(image_converter.get_look_at_image()):
         rospy.sleep(0.001)
@@ -490,10 +536,11 @@ def analyze_picture_with_alphapose():
         "image_as_txt": cv_image_as_txt,
         "out_path": OUT_PATH,
     }
+    # Sending data to AlphaPose image server, waits for response and saves the result
     response = alphapose_image_service_client.call(test_dict)
     human_info.alphapose_json_result = response["json_results"]
-    rospy.loginfo("Analyza pozy pomoci AlphaPose dokoncena. Vysledna data:")
-    rospy.loginfo(human_info.alphapose_json_result)
+    rospy.loginfo("Analysis of pose via AlphaPose finished. Results:")
+    print(human_info.alphapose_json_result)
 
 
 def analyze_picture_with_motionbert():
@@ -503,7 +550,6 @@ def analyze_picture_with_motionbert():
     rospy.loginfo("Zahajeni analyzy obrazu pomoci MotionBERT...")
     test_dict = {
         "Hello": "MotionBERT",
-        #"image_resolution": CAMERA_RESOLUTION,
         "out_path": OUT_PATH,
         "json_results": human_info.alphapose_json_result,
     }
@@ -647,47 +693,49 @@ def get_translation_matrix(x, y):
 
 def transform_points_to_odom(final_point):
     """
-    Funkce provadejici postupne transformace polohovych vektoru finalniho bodu dojezdu a pozice cloveka
+    Function transforming location of human and the final point to odom coordinate system
+    Input: final_point - Location3DJoint() object in MotionBERT human coordinate system
+    Output: final_point_matrix - np.array() with coordinates of final point in odom coordinate system
+            human_coordinates - np.array() with coordinates of human in odom coordinate system
     """
     final_point_matrix = np.array([[final_point.x], [final_point.y], [1]])
     rot_matrix = get_rotation_matrix(-pi/2)
     final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
-    print("Bod po rotaci do zakladny cloveka")
-    print(final_point_matrix)
+    #print("Bod po rotaci do zakladny cloveka")
+    #print(final_point_matrix)
 
-    # zatim placeholder odhadnute vzdalenosti cloveka na obraze.
-    distance_to_human = 3.0
-    # souradnice cloveka v souradnem systemu cloveka -> [0;0], pote translace do mista robota.
+    # Distance from robot base to human extracted from depth image
+    distance_to_human = human_info.distance_from_robot
+    # Human coordinates in human coordinate system -> [0, 0, 1]
     human_coordinates = np.array([[0], [0], [1]])
     trans_matrix = get_translation_matrix(distance_to_human, 0)
     final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
     human_coordinates = np.matmul(trans_matrix, human_coordinates)
-    print("Finalni bod po translaci do zakladny robota")
-    print(final_point_matrix)
-    print("Pozice cloveka po translaci do zakladny robota")
-    print(human_coordinates)
+    # print("Finalni bod po translaci do zakladny robota")
+    # print(final_point_matrix)
+    # print("Pozice cloveka po translaci do zakladny robota")
+    # print(human_coordinates)
 
-    # nasleduje rotace do spravneho uhlu pro translaci v odom.
+    # Rotation to match the orientation of odom coordinate system.
     base_position_and_rotation = mobile_base.get_current_position_and_rotation()
     head_joint_position = latest_joint_states.return_head_joints_positions()
     trans_matrix = get_translation_matrix(base_position_and_rotation[0], base_position_and_rotation[1])
     rot_matrix = get_rotation_matrix(base_position_and_rotation[2] + head_joint_position[0])
     final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
     human_coordinates = np.matmul(rot_matrix, human_coordinates)
-    print("Finalni bod po rotaci do souradneho systemu odom")
-    print(final_point_matrix)
-    print("Pozice cloveka po rotaci do souradneho systemu odom")
-    print(human_coordinates)
+    # print("Finalni bod po rotaci do souradneho systemu odom")
+    # print(final_point_matrix)
+    # print("Pozice cloveka po rotaci do souradneho systemu odom")
+    # print(human_coordinates)
 
-    # jako posledni je translace do pocatku sour. systemu odom.
+    # Translation to odom coordinate system.
     final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
     human_coordinates = np.matmul(trans_matrix, human_coordinates)
-    print("Finalni bod po translaci do souradneho systemu odom")
+    rospy.loginfo("Final point after transformation to odom coordinate system:")
     print(final_point_matrix)
-    print("Pozice cloveka po translaci do souradneho systemu odom")
+    rospy.loginfo("Human position after transformation to odom coordinate system:")
     print(human_coordinates)
     return [final_point_matrix, human_coordinates]
-
 
 
 def find_final_point():
@@ -720,7 +768,6 @@ def find_final_point():
     raw_input("Press ENTER to confirm movement to final point")
 
     return [final_point_matrix, final_angle_in_degs]
-    move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
 
 
 def move_robot_to_final_point(final_point_matrix, final_angle_in_degs):
@@ -739,11 +786,13 @@ if __name__ == '__main__':
         
         head_action_client = create_action_client("/head_controller/follow_joint_trajectory")
         #hand_left_action_client = create_action_client('/hand_left_controller/follow_joint_trajectory')
-
+        tf_listener = TransformListener()
         mobile_base = BasePositionWithOrientation()
         image_converter = ImageConverter()
         latest_joint_states = LatestJointStates()
         human_info = HumanInfo()
+        camera_info = Camera()
+
         mediapipe_image_service_client = ServiceClient()
         alphapose_image_service_client = ServiceClient(port=242425)
         motionbert_image_service_client = ServiceClient(port=242426)
@@ -752,7 +801,17 @@ if __name__ == '__main__':
 
         args = parse_args()
 
-        if args.demo == "move_head":
+        if args.demo == "camera":
+            camera_info = Camera()
+            """ image_converter.lock.acquire()
+            image_converter.look_at_camera_info = True
+            image_converter.look_at_depth_image = True
+            image_converter.lock.release() """
+            #image_converter.look_at_depth_image = True
+            analyze_picture_with_mediapipe()
+            camera_info.find_distance_to_human(human_info.center_location)
+
+        elif args.demo == "move_head":
             move_head(head_action_client, 0, 0)
             move_head(head_action_client, 30, 0)
             move_head(head_action_client, -30, 0)
@@ -802,6 +861,7 @@ if __name__ == '__main__':
                     tries += 1
                 elif human_info.is_found() and human_info.is_centered() and args.demo == "":
                     tries = 0
+                    camera_info.find_distance_to_human(human_info.center_location)
                     rospy.loginfo("Human is in center of the camera view. Press ENTER to regognise pose and move robot...")
                     i, o, e = select.select( [sys.stdin], [], [], 3)
                     if (i):

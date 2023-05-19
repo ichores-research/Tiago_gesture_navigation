@@ -11,12 +11,14 @@ class Location3DJoint:
         self.y=y
         self.z=z
 
+
 class HumanInfo:
     def __init__(self):
         self.human_found = False
         self.human_centered = False
         self.center_location = LocationPoint()
         self.final_robot_rotation = LocationPoint()
+        self.distance_from_robot = None
         self.alphapose_json_result = None
         self.motionbert_joints_positions = None
 
