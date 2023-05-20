@@ -35,4 +35,4 @@ After the steps above are complete, do following:
 
 - from [alphapose_changed](alphapose_changed) folder copy everything there to original AlphaPose repo and put there [image_share_service](image_share_service) as well 
 
-- from [motionbert_changed](motionbert_changed) folder copy everything there to original AlphaPose repo and put there [image_share_service](image_share_service) as well 
+- from [motionbert_changed](motionbert_changed) folder copy everything there to original MotionBERT repo and put there [image_share_service](image_share_service) as well 
