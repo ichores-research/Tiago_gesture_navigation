@@ -6,7 +6,7 @@ This is a repository to bachelor thesis on working with humanoid robot TIAGo++ u
 
 ## Description of folders in this repository
 
-- tiago_dual_python_controller: ROS package containing main script [main.py](main.py) alongside with script to process image by MediaPipe solution [mediapipe_image_server.py](mediapipe_image_server.py). Also contains images created during testing in simulation
+- tiago_dual_python_controller: ROS package containing main script [main.py](tiago_dual_python_controller/scripts/main.py) alongside with script to process image by MediaPipe solution [mediapipe_image_server.py](tiago_dual_python_controller/scripts/mediapipe_image_server.py). Also contains images created during testing in simulation
 
 
 - alphapose_changed: Folder with files from original AlphaPose repository, which were changed to make the data processing repetable.
