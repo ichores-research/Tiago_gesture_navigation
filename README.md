@@ -14,3 +14,25 @@ This is a repository to bachelor thesis on working with humanoid robot TIAGo++ u
 - [motionbert_changed](motionbert_changed): Folder with files from original [MotionBERT](https://github.com/Walter0807/MotionBERT) repository, which were changed to make the data processing repetable.
 
 - [image_share_service](image_share_service): Folder containing classes used for comunicating accros running scripts via LAN, used for data transfer
+
+
+## Installation and requirements
+
+The requirements to run this project are
+
+- Both Python 2.7 and Python 3.6.9
+
+- Installed AlphaPose conda enviroment (refer to AlphaPose repo for installation guide), Fast Pose model trained on Halpe (26 keypoits) dataset.
+
+- Installed MotionBERT conda enviroment (refer to AlphaPose repo for installation guide), everything required for 3D Pose estimation from this repo
+
+- Ubuntu 18.04 with ROS Melodic and TIAGo++ workspace installed by [this](http://wiki.ros.org/Robots/TIAGo%2B%2B/Tutorials/Installation/InstallUbuntuAndROS) guide
+
+- few additional packages for comunication between running scripts: zmq, cloudpickle, mediapipe (version 0.8.2 for Python 3.6.9)
+
+
+After the steps above are complete, do following:
+
+- from [alphapose_changed](alphapose_changed) folder copy everything there to original AlphaPose repo and put there [image_share_service](image_share_service) as well 
+
+- from [motionbert_changed](motionbert_changed) folder copy everything there to original AlphaPose repo and put there [image_share_service](image_share_service) as well 
