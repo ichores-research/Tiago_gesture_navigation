@@ -1,18 +1,28 @@
 H36M_JOINTS_DESC = ['root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle', 'torso', 'neck', 'nose', 'head', 'LShoulder', 'LElbow', 'LWrist', 'RShoulder', 'RElbow', 'RWrist']
 
+DATA_SCALE = 0.9 # MotionBERT returns joint position on z-axis between [0,2] -> scaling downt to human with height 1.8m
+
 class LocationPoint:
+    """
+    Object serving as a simple 2D point
+    """
     def __init__(self, x=None, y=None):
         self.x = x
         self.y = y
 
 class Location3DJoint:
+    """
+    Object serving as a simple 3D point
+    """
     def __init__(self, x=None, y=None, z=None):
         self.x=x
         self.y=y
         self.z=z
 
-
 class HumanInfo:
+    """
+    Class containing information about human located in the picture
+    """
     def __init__(self):
         self.human_found = False
         self.human_centered = False
@@ -29,11 +39,18 @@ class HumanInfo:
         return self.human_centered
     
     def clean_print_joints(self):
+        """
+        Function for printing found joints nicely 
+        """
         for joint in self.motionbert_joints_positions:
             coordinates = self.motionbert_joints_positions[joint]
             print("%s:(%f, %f, %f)" %(joint, coordinates.x, coordinates.y, coordinates.z))
 
     def create_joints_dict(self):
+        """
+        Function that creates dictionary of joints from data provided by MotionBERT 
+        and rescales them to match size of an average human.
+        """
         joint_idx = 0
         joints_dict = {}
         for joint in H36M_JOINTS_DESC:
@@ -43,28 +60,29 @@ class HumanInfo:
         for joint in self.motionbert_joints_positions:
             coordinates = self.motionbert_joints_positions[joint]
             self.motionbert_joints_positions[joint] = Location3DJoint(
-                x=coordinates[0],
-                y=coordinates[2],
-                z=coordinates[1])
+                x=coordinates[0] * DATA_SCALE,
+                y=coordinates[2] * DATA_SCALE,
+                z=coordinates[1] * DATA_SCALE
+            )
 
     def change_reference_of_joints(self):
         """
-        Funkce posouvajici pocatek souradneho systemu bodu.
+        Function that moves origin of coordinates of human joints to place on the ground between the hips
         """
         center = Location3DJoint()
+
         left_hip = self.motionbert_joints_positions["LHip"]
-        print(left_hip.x)
         right_hip = self.motionbert_joints_positions["RHip"]
-        print(right_hip.x)
         left_ankle = self.motionbert_joints_positions["LAnkle"]
         right_ankle = self.motionbert_joints_positions["RAnkle"]
+        
         center.x = (left_hip.x + right_hip.x)/2
         center.y = (left_hip.y + right_hip.y)/2
-        center.z = (left_ankle.z + right_ankle.z)/2
-        print("Center location: (%f, %f, %f)" %(center.x, center.y, center.z))
+        center.z = min(left_ankle.z, right_ankle.z)
+        
         for joint in self.motionbert_joints_positions:
             self.motionbert_joints_positions[joint].x -= center.x
             self.motionbert_joints_positions[joint].y -= center.y
             self.motionbert_joints_positions[joint].z -= center.z
-            self.motionbert_joints_positions[joint].z = -self.motionbert_joints_positions[joint].z # chci aby nahoru bylo do kladnych hodnot -> pravotocivy souradny system.
-        self.clean_print_joints()
+            # We want to have up direction from ground to be in positive coordinates -> righthand coordinate system.
+            self.motionbert_joints_positions[joint].z = -self.motionbert_joints_positions[joint].z

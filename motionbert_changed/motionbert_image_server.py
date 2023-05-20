@@ -1,3 +1,7 @@
+"""
+Script based on "infer_wild.py" from MotionBERT folder for processing input json data from AlphaPose
+"""
+
 import os
 import numpy as np
 import argparse
@@ -17,32 +21,34 @@ from image_share_service.service_server import ServiceServer
 
 
 def parse_args():
+    """
+    Function for parsing input arguments
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default='configs/pose3d/MB_ft_h36m_global_lite.yaml', help="Path to the config file.")
     parser.add_argument('-e', '--evaluate', default='checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to evaluate (file name)')
-    #parser.add_argument('-j', '--json_path', type=str, help='alphapose detection result json path')
-    #parser.add_argument('-v', '--vid_path', type=str, help='video path')
     parser.add_argument('-o', '--out_path', type=str, default="/home/guest/image_recog_results/" ,help='output path')
-    #parser.add_argument('--pixel', action='store_true', help='align with pixle coordinates')
     parser.add_argument('--focus', type=int, default=None, help='target person id')
     parser.add_argument('--clip_len', type=int, default=1, help='clip length for network input')
-    parser.add_argument('--debug', type=bool, default=False, help='emables saving of partial results from MotionBERT')
+    parser.add_argument('--debug', type=bool, default=False, help='enables saving of partial results from MotionBERT')
     opts = parser.parse_args()
     return opts
 
 
-def callback_image_server(stuff:dict):
+def callback_image_server(received_data:dict):
     """
-    Callback ktery vykona rozpoznani 3D pozy ze souradnic ziskanych pomoci AlphaPose
+    Callback functions receiveing dictionary from client with json data
+    Input:
+        - received_data: dictionary with data to process from client
+    Output:
+        - received_data: dictionary with results data
     """
     print("MotionBERT image recognition started...")
-    print("Main sends: Hello " + stuff["Hello"])
-    stuff["Hello"] = "ROS"
-    loaded_json = stuff["json_results"]
+    print("Main sends: Hello " + received_data["Hello"])
+    received_data["Hello"] = "ROS"
+    loaded_json = received_data["json_results"]
 
-    #vid = imageio.get_reader(opts.vid_path, 'ffmpeg') # ,  'ffmpeg'
-
-    fps_in = 1.0 # jpg obrazek je proste 1 snimek.
+    fps_in = 1.0 # .jpg image -> for visualization
    
     wild_dataset = WildDetDataset(loaded_json, clip_len=opts.clip_len, scale_range=[1,1], focus=opts.focus)
 
@@ -76,30 +82,22 @@ def callback_image_server(stuff:dict):
     results_all = np.hstack(results_all)
     results_all = np.concatenate(results_all)
 
+    # Optional saving of results to files and rendering visualization
     if opts.debug:
         render_and_save(results_all, '%s/human.mp4' % (opts.out_path), keep_imgs=True, fps=fps_in, draw_face=True)
-        #print(results_all)
         np.save('%s/human.npy' % (opts.out_path), results_all)
 
-    stuff["human_joints_positions"] = results_all
+    received_data["human_joints_positions"] = results_all
     print("Results saved, MotionBERT waiting for another picture...")
 
-    return stuff
+    return received_data
 
 if __name__ == "__main__":
 
-    """ opts = argparse.Namespace(
-        clip_len=1,
-        config='configs/pose3d/MB_ft_h36m_global_lite.yaml',
-        evaluate='checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin',
-        focus=None,
-        json_path='', # /home/guest/image_recog_results/alphapose-results.json
-        out_path='/home/guest/image_recog_results/',
-        vid_path="", # "/home/guest/image_recog_results/human.jpg"
-    ) """
     opts = parse_args()
     print(opts)
 
+    # Load models and checkpoints before processing.
     args = get_config(opts.config)
 
     model_backbone = load_backbone(args)
@@ -110,7 +108,8 @@ if __name__ == "__main__":
     print('Loading checkpoint', opts.evaluate)
     checkpoint = torch.load(opts.evaluate, map_location=lambda storage, loc: storage)
 
-    # umazani module. pred zacatkem popisu pro vykresleni modelu.
+    # Code for renaming parts loaded from checkpoint, used when error occures with missing keys in checkpoint
+    """ 
     from collections import OrderedDict
     new_checkpoint = OrderedDict()
     for k, v in checkpoint['model_pos'].items():
@@ -118,6 +117,9 @@ if __name__ == "__main__":
         new_checkpoint[name] = v
 
     model_backbone.load_state_dict(new_checkpoint, strict=True)
+    """
+
+    model_backbone.load_state_dict(checkpoint["model_pos"], strict=True)
     model_pos = model_backbone
     model_pos.eval()
     testloader_params = {
@@ -134,6 +136,7 @@ if __name__ == "__main__":
     image_service_server = ServiceServer(callback_image_server, port=242426)
     print("MotionBERT image server running, waiting for new image...")
 
+    # Keep the script alive and waiting for client request.
     try:
         while(True):
             time.sleep(1)

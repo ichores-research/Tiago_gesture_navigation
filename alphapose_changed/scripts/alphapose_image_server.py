@@ -1,9 +1,6 @@
-# -----------------------------------------------------
-# Copyright (c) Shanghai Jiao Tong University. All rights reserved.
-# Written by Haoyi Zhu,Hao-Shu Fang
-# -----------------------------------------------------
-
-"""Script for single-image demo."""
+"""
+Repurposed script "demo_api.py" from AlphaPose scripts directory for human recognition on received images.
+"""
 import argparse
 import torch
 import os
@@ -27,18 +24,11 @@ from alphapose.utils.vis import getTime
 
 from image_share_service.service_server import ServiceServer
 
-"""----------------------------- Demo options -----------------------------"""
-def parse_args():
-    """
-    Funkce nastavujici zakladni parametry pro me dulezite
-    """
-    parser = argparse.ArgumentParser(description='AlphaPose Single-Image Demo')
-    parser.add_argument('--debug', type=bool, default=False,
-                        help='emables saving of partial results from AlphaPose')
-    opts = parser.parse_args()
-    return opts
 
 class DetectionLoader():
+    """
+    Class taken directly from the script mentioned on the begining of the file, prepares data for detection
+    """
     def __init__(self, detector, cfg, opt):
         self.cfg = cfg
         self.opt = opt
@@ -156,7 +146,11 @@ class DetectionLoader():
     def read(self):
         return self.pose
 
+
 class DataWriter():
+    """
+    Class taken directly from the script mentioned on the begining of the file. initiates wtiter for output
+    """
     def __init__(self, cfg, opt):
         self.cfg = cfg
         self.opt = opt
@@ -258,7 +252,11 @@ class DataWriter():
     def save(self, boxes, scores, ids, hm_data, cropped_boxes, orig_img, im_name):
         self.item = (boxes, scores, ids, hm_data, cropped_boxes, orig_img, im_name)
 
+
 class SingleImageAlphaPose():
+    """
+    Class taken directly from the script mentioned on the begining of the file.
+    """
     def __init__(self, args, cfg):
         self.args = args
         self.cfg = cfg
@@ -274,6 +272,7 @@ class SingleImageAlphaPose():
         self.pose_model.eval()
         
         self.det_loader = DetectionLoader(get_detector(self.args), self.cfg, self.args)
+        self.det_loader.detector.load_model()
 
     def process(self, im_name, image):
         # Init data writer
@@ -355,28 +354,46 @@ class SingleImageAlphaPose():
         return json_results
 
 
-def callback_image_server(stuff:dict):
+def parse_args():
     """
-    Funkce ktera je zavolana vzdy, kdyz prijde prikaz k analyze obrazu
+    Function for parsing input parameters
+    """
+    parser = argparse.ArgumentParser(description='AlphaPose Single-Image Demo')
+    parser.add_argument('--debug', type=bool, default=False,
+                        help='emables saving of partial results from AlphaPose')
+    opts = parser.parse_args()
+    return opts
+
+
+def callback_image_server(received_data:dict):
+    """
+    Callback processing received image by AlphaPose, sends the results
     """
     print("AlphaPose image recognition started...")
-    print("Main sends: Hello " + stuff['Hello'])
+    print("Main sends: Hello " + received_data['Hello'])
     
-    example(stuff)
-    stuff["Hello"] = "ROS"
-    stuff["image_as_txt"] = ""
-    print("AlphaPose recognition complete. Waitong for another picture...")
-    return stuff
+    process_image(received_data)
+    received_data["Hello"] = "ROS"
+    received_data["image_as_txt"] = ""
+    print("AlphaPose image recognition complete. Waitong for another image...")
+    return received_data
 
-def example(stuff):
-    im_name = stuff["image_name"]   # final name of the image
-    outputpath = stuff["out_path"]  # path to results
+
+def process_image(received_data):
+    """
+    Function that processes the input data from client
+    Input:
+        - received_data: dictionary of received data from client
+    Result:
+        Results of analysis are saved to results dictionary
+    """
+    im_name = received_data["image_name"]   # final name of the image
+    outputpath = received_data["out_path"]  # path to results
     if not os.path.exists(outputpath + 'vis'):
         os.mkdir(outputpath + 'vis')
 
-    #print(im_name)
-
-    image_as_txt = stuff["image_as_txt"]
+    # Decode image from string
+    image_as_txt = received_data["image_as_txt"]
     jpg_original = base64.b64decode(image_as_txt)
     jpg_as_np = np.frombuffer(jpg_original, dtype=np.uint8)
     image = cv2.imdecode(jpg_as_np, flags=1)
@@ -386,19 +403,20 @@ def example(stuff):
 
     result = [pose]
 
+    # If debug, save the results to folder
     if args.debug:
-        # pri debuggingu uloz fotky a json do souboru, jiz neni potreba
         img = demo.getImg()     # or you can just use: img = cv2.imread(image)
         img = demo.vis(img, pose)   # visulize the pose result
         cv2.imwrite(os.path.join(outputpath, 'vis', os.path.basename(im_name)), img)
 
-        # write the result to json:
+    # Write the result to json:
     json_results = demo.writeJson(result, outputpath, form=args.format, for_eval=args.eval, save_json=args.debug)
 
-    stuff["json_results"] = json_results
+    received_data["json_results"] = json_results
 
 if __name__ == "__main__":
 
+    # Settings of AlphaPose, slightly tweaked from the default
     args = argparse.Namespace(
         cfg='configs/halpe_26/resnet/256x192_res50_lr1e-3_1x.yaml',
         checkpoint='pretrained_models/halpe26_fast_res50_256x192.pth',
@@ -439,12 +457,12 @@ if __name__ == "__main__":
     opts = parse_args()
     args.debug = opts.debug
     
-
     demo = SingleImageAlphaPose(args, cfg)
 
     image_processing_server = ServiceServer(callback_image_server, port=242425)
     print("Image processing server with AplhaPose is ready for file...")
 
+    # Keep the script alive and waiting for client request
     try:
         while(True):
             time.sleep(1)
