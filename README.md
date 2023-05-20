@@ -1,7 +1,7 @@
 
 # Bachelor Thesis Repository: Gesture Operation of Humanoid Robot Tiago 
 
-This is a repository to bachelor thesis on working with humanoid robot TIAGo++ using human pose recognition solution from MediaPipe, processing image data with neural networks AlphaPose and MotionBERT with goal to find human in a wokspace around the robot, recognize the direction in which a human is pointing and moving to said point.
+This is a repository to bachelor thesis on working with humanoid robot TIAGo++ using human pose recognition solution from MediaPipe, processing image data with neural networks [AlphaPose](https://github.com/MVIG-SJTU/AlphaPose) and [MotionBERT](https://github.com/Walter0807/MotionBERT) with goal to find human in a wokspace around the robot, recognize the direction in which a human is pointing and moving to said point.
 
 
 ## Description of folders in this repository
