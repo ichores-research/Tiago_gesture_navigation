@@ -22,7 +22,7 @@ The requirements to run this project are
 
 - Both Python 2.7 and Python 3.6.9
 
-- Installed AlphaPose conda enviroment (installable from [environment_alphapose.yml](environment_alphapose.yml)) alongside with downloaded repo, Fast Pose model trained on Halpe (26 keypoits) dataset.
+- Installed AlphaPose conda enviroment (installable from [environment_alphapose.yml](environment_alphapose.yml)) alongside with downloaded repo, Fast Pose model trained on Halpe (26 keypoints) dataset.
 
 - Installed MotionBERT conda enviroment (installable from [environment_motionbert.yml](environment_motionbert.yml)) alongside with downloaded repo, everything required for 3D Pose estimation from this repo
 
