@@ -28,11 +28,12 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from geometry_msgs.msg import Pose, Quaternion, Point, Twist, TransformStamped
 from std_msgs.msg import String
 from sensor_msgs.msg import Image, JointState, CameraInfo
-from control_msgs.msg import FollowJointTrajectoryAction, JointTolerance
-from control_msgs.msg._FollowJointTrajectoryGoal import FollowJointTrajectoryGoal
+from control_msgs.msg import FollowJointTrajectoryAction, JointTolerance, FollowJointTrajectoryGoal
+
 from nav_msgs.msg import Odometry
 
 from actionlib.simple_action_client import SimpleActionClient
+from actionlib.action_client import ActionClient
 
 import tf
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
@@ -55,7 +56,7 @@ ROBOT_JOINTS_MAX_VALUES_RADIANS = {
 OUT_PATH = "/home/guest/image_recog_results/"
 
 # Definitions of speed of the movement of the robot base
-LINEAR_MOVEMENT_SPEED = 0.5
+LINEAR_MOVEMENT_SPEED = 0.2
 ANGULAR_MOVEMENT_SPEED = 0.5
 POSITION_AND_ORIENTATION_TOLERANCE = 0.1
 SPEED_TOLERANCE = 0.01
@@ -95,6 +96,7 @@ class Camera:
         # Reading distance data on position of the center of human in depth image.
         depth_image_message = rospy.wait_for_message("/xtion/depth_registered/image_raw", Image)
         depth_image = image_converter.bridge.imgmsg_to_cv2(depth_image_message, desired_encoding="passthrough")
+        print(depth_image)
         distance = depth_image[pixel_y][pixel_x]
 
         # Camera coordinate frame offset in 2D from base_link
@@ -126,7 +128,6 @@ class ImageConverter:
         self.look_at_image = False
         self.last_saved_image = None
         self.last_image_buffer = None
-        self.camera_resolution = None
 
         self.image_thread = threading.Thread(target=self.image_listener)
         self.image_thread.start()
@@ -371,7 +372,7 @@ def create_action_client(action_topic_interface_string):
     iterations = 0
     max_iterations = 3
     rospy.loginfo("Creating action client to topic: %s ..." % action_topic_interface_string)
-    while(not action_client.wait_for_server(rospy.Duration(5,0)) and iterations < max_iterations):
+    while(not action_client.wait_for_server(rospy.Duration(30,0)) and iterations < max_iterations):
         rospy.loginfo("Creating action client to topic: %s ..." % action_topic_interface_string)
         iterations+= 1
     if ( iterations == max_iterations ):
@@ -381,6 +382,48 @@ def create_action_client(action_topic_interface_string):
         rospy.loginfo("Action client created")
 
     return action_client
+
+
+def move_head_new(head_action_client, head_1_joint_degrees, head_2_joint_degrees, wait_for_result=True):
+    """
+    Function for controlling the head of the robot, its rotation in both of its joints to given angle.
+
+    There are two joints in the head, input values of desired final angle are inputed in degrees
+    Inputs: 
+        - head_1_joint: horizontal rotation, measured from looking straight forward, positive direction while rotating left
+        - head_2_joint: vertical rotation, measured from looking straight forward, positive direction while rotating up
+        - wait_for_result: if False, we dont wait for robot to finish rotating head and we continue to execute program
+    Use example:
+        move_head(head_action_client, 45, 0, wait_for_result=True)
+    """
+
+    # First we set the trajectory, one point in our case for robot to rotate to.
+
+    # Creates a goal to send to the action server.
+    goal = FollowJointTrajectoryGoal()
+    goal.trajectory.joint_names = ['head_1_joint', 'head_2_joint']
+    goal.trajectory.points.append(JointTrajectoryPoint(
+            positions=[radians(head_1_joint_degrees), radians(head_2_joint_degrees)],
+            velocities=[0.0, 0.0],
+            accelerations=[0.0, 0.0],
+            effort=[0.0, 0.0],
+            time_from_start=rospy.Duration(1,0)))
+    goal.goal_time_tolerance = rospy.Duration(0,0)
+    # goal.trajectory.points[-1].time_from_start.secs = 3
+
+    # sending goal to created action client
+    rospy.loginfo(goal)
+    rospy.loginfo("Rotated head to required joint angles:\nhead_1_joint:%f\nhead_2_joint: %f" % (head_1_joint_degrees, head_2_joint_degrees))
+    head_action_client.send_goal(goal, feedback_cb=feedback_cb)
+
+    # if we want to wait for the end of head rotation, we wait
+    if wait_for_result:
+        head_action_client.wait_for_result(rospy.Duration(10,0))
+        result = head_action_client.get_result()
+        if result:
+            rospy.loginfo("Head movement successfully completed!")
+        else:
+            rospy.logerr("Error while rotating head joints!")
 
 
 def move_head(head_action_client, head_1_joint_degrees, head_2_joint_degrees, wait_for_result=True):
@@ -440,7 +483,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
         move_base(Point(), 60, on_place=True)
     """
     # Rate in which we repeat sendig command to base to move, required for smooth movement
-    r = rospy.Rate(4)
+    r = rospy.Rate(20000)
     speed = Twist()
 
     # Only angles in range [-pi,pi] can be reached.
@@ -450,6 +493,14 @@ def move_base(goal, final_angle_in_degs, on_place=False):
         final_angle_in_degs += 360
     # First we try to get to desired goal by using a simple controller.
     # If on_place, we skip the movement part of this process and only rotate to desired angle.
+
+    # We wait for robot to stop the inertial movement when goal position reached
+    while(abs(mobile_base.get_current_speed()[0]) > SPEED_TOLERANCE 
+            or abs(mobile_base.get_current_speed()[1]) > SPEED_TOLERANCE):
+        speed.angular.z = 0.0
+        mobile_base.pub_velocity_command.publish(speed)
+        rospy.sleep(0.01)
+
     if on_place:
         rospy.loginfo("Started a rotation of robot on place to desired rotation: \n%s" % (final_angle_in_degs))
     else:
@@ -487,7 +538,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
             speed.angular.z = 0.0
 
         mobile_base.pub_velocity_command.publish(speed)
-        mobile_base.current_position_and_angle()
+        # mobile_base.current_position_and_angle()
         r.sleep()
 
     # When final goal is reached, start a rotation to final angle
@@ -504,7 +555,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
 
     while not rospy.is_shutdown():
         # While te robot is not facing the correct way, rotate to it.
-        if ((final_rotation - mobile_base.rotation > POSITION_AND_ORIENTATION_TOLERANCE 
+        if ((final_rotation - mobile_base.rotation > POSITION_AND_ORIENTATION_TOLERANCE * 0.1
                 and abs(final_rotation - 2*pi - mobile_base.rotation) > abs(final_rotation - mobile_base.rotation))
                 or (abs(final_rotation + 2*pi - mobile_base.rotation) < abs(final_rotation - mobile_base.rotation)
                 and abs(final_rotation - mobile_base.rotation) > POSITION_AND_ORIENTATION_TOLERANCE)):
@@ -518,8 +569,8 @@ def move_base(goal, final_angle_in_degs, on_place=False):
             speed.angular.z = 0.0
             break
         mobile_base.pub_velocity_command.publish(speed)
-        mobile_base.current_position_and_angle()
-        mobile_base.current_speed()
+        # mobile_base.current_position_and_angle()
+        # mobile_base.current_speed()
         r.sleep()
     rospy.loginfo("Robot is facing final direction. Waiting for robot to stop the rotation...")
     while(abs(mobile_base.get_current_speed()[0]) > ANGULAR_MOVEMENT_SPEED
@@ -552,15 +603,17 @@ def analyze_picture_with_mediapipe(step=None):
     }
     results = mediapipe_image_service_client.call(data)
 
+    rospy.loginfo("MediaPipe response received!")
+
     # Saving received results to HumanInfo() object, if any human was detected
-    try:
+    if results != None:
         human_info.human_found = results["human_found"]
         human_info.human_centered = results["human_centered"]
         human_info.final_robot_rotation.x = results["final_robot_rotation.x"]
         human_info.final_robot_rotation.y = results["final_robot_rotation.y"]
         human_info.center_location.x = results["human_center_x"]
         human_info.center_location.y = results["human_center_y"]
-    except KeyError:
+    else:
         rospy.logerr("Returned dict from MediaPipe server is empty!")
 
 
@@ -629,22 +682,22 @@ def find_human():
         if step == 0 and (abs(latest_joint_states.return_head_joints_positions()[0]) > 0.01 or abs(latest_joint_states.return_head_joints_positions()[0]) > 0.01):
             head_position = latest_joint_states.return_head_joints_positions()
             base_rotation = base_rotation + head_position[0]
-            move_head(head_action_client, 0, 0, wait_for_result=False)
+            move_head_new(head_action_client, 0, 0, wait_for_result=False)
             move_base(Point(), degrees(base_rotation), on_place=True)
         elif step == 1:
-            move_head(head_action_client, 45, 0)
+            move_head_new(head_action_client, 45, 0)
         elif step == 2:
-            move_head(head_action_client, -45, 0)
+            move_head_new(head_action_client, -45, 0)
         elif step == 3:
             move_base(Point(), degrees(base_rotation)-135, on_place=True)
         elif step == 4:
-            move_head(head_action_client, 0, 0)
+            move_head_new(head_action_client, 0, 0)
         elif step == 5:
-            move_head(head_action_client, 45, 0)
+            move_head_new(head_action_client, 45, 0)
         elif step == 6:
             move_base(Point(), degrees(base_rotation)+90, on_place=True)
         elif step == 7:
-            move_head(head_action_client, 0, 0)
+            move_head_new(head_action_client, 0, 0)
         elif step == 8:
             move_base(Point(), degrees(base_rotation), on_place=True)
             step = 0
@@ -673,9 +726,9 @@ def center_camera_on_human():
 
     # if the human is to close to the limit of head joint rotation, rotate the base to human.
     if abs(final_head_hor_angle) < HEAD_JOINT_ANGLE_LIMIT:
-        move_head(head_action_client, final_head_hor_angle, final_head_ver_angle)
+        move_head_new(head_action_client, final_head_hor_angle, final_head_ver_angle)
     elif abs(final_head_hor_angle) >= HEAD_JOINT_ANGLE_LIMIT:
-        move_head(head_action_client, 0, final_head_ver_angle, wait_for_result=False)
+        move_head_new(head_action_client, 0, final_head_ver_angle, wait_for_result=False)
         move_base(Point(), degrees(mobile_base.rotation) + final_head_hor_angle, on_place=True)
 
     head_joints_positions = latest_joint_states.return_head_joints_positions()
@@ -765,12 +818,12 @@ def transform_points_to_odom(final_point):
     # Rotation to match the orientation of odom coordinate system.
     base_position_and_rotation = mobile_base.get_current_position_and_rotation()
     head_joint_position = latest_joint_states.return_head_joints_positions()
-    trans_matrix = get_translation_matrix(base_position_and_rotation[0], base_position_and_rotation[1])
     rot_matrix = get_rotation_matrix(base_position_and_rotation[2] + head_joint_position[0])
     final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
     human_coordinates = np.matmul(rot_matrix, human_coordinates)
 
     # Translation to odom coordinate system.
+    trans_matrix = get_translation_matrix(base_position_and_rotation[0], base_position_and_rotation[1])
     final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
     human_coordinates = np.matmul(trans_matrix, human_coordinates)
     rospy.loginfo("Final point after transformation to odom coordinate system:")
@@ -823,13 +876,13 @@ def move_robot_to_final_point(final_point_matrix, final_angle_in_degs):
     Result: Robot reaches desired point
     """
     rospy.loginfo("Moving robot to final point position:\nx = %f\ny = %f...")
-    move_head(head_action_client, 0, 0, wait_for_result=False)
+    move_head_new(head_action_client, 0, 0, wait_for_result=False)
     move_base(Point(x = final_point_matrix[0], y=final_point_matrix[1]), final_angle_in_degs)
 
 if __name__ == '__main__':
 
     try:
-        rospy.init_node("tiago_controller", anonymous=True)
+        rospy.init_node("tiago_python_controller", anonymous=True)
         
         head_action_client = create_action_client("/head_controller/follow_joint_trajectory")
         
@@ -847,23 +900,61 @@ if __name__ == '__main__':
 
         args = parse_args()
 
+        # login - username - pal
+        #       - password - pal
+
+        # ip adresu zjistim pomoci prikazu: ip addr - pripojeni wlan0
+
+        # odometrie se i s celym robotem resetuje prikazem: reboot
+
+        # nastaveni ip adresy robota v kazdem terminalu - export ROS_MASTER_URI=http://192.168.130.114:11311
+        # nastaveni ip adresy ovladaciho pocitace V KAZDEM TERMINALU KKTE: export ROS_IP=<moje_ip_adresa>
+        # pak by mel fungovat rostopic list
+
+        # pokud nebudou videt topics, je potreba v /etc/hosts nastavit ip adresu robota a jeho jmeno, u nas
+        # 192.168.130.114 tiago-114c
+
+        # pripojei na tiaga pomoci ssh: ssh pal@tiago-114c, heslo pal
+        # pro reboot je potreba heslo do root - palroot
+
+        # Web commander na robota: http://tiago-114c:8080 - tam deaktivovat head_manager
+
+        # teleoperace:  leva packa: ovladani dopredu a dozadu
+        #               prava packa - doleva a doprava
+        # ovladani hlavy: x=doleva, a=dolu, y=nahoru, b=doprava
+
         # Demo sequence "camera"
         if args.demo == "camera":
+            # functional on real robot
+            rospy.sleep(5)
             analyze_picture_with_mediapipe()
-            image_converter.get_current_view(show=True)
+            image_converter.get_current_view(save=True, filename="real_human.jpg")
+            if human_info.is_found():
+                #image_converter.get_current_view(show=True)
+                analyze_picture_with_alphapose()
+                analyze_picture_with_motionbert()
+
+        elif args.demo == "robot_info":
+            # functional in real robot.
+            rospy.sleep(1)
+            mobile_base.current_position_and_angle()
+            mobile_base.current_speed()
+
 
         # Demo sequence "move_head"
         elif args.demo == "move_head":
-            move_head(head_action_client, 0, 0)
-            move_head(head_action_client, 30, 0)
-            move_head(head_action_client, -30, 0)
-            move_head(head_action_client, 0, 0)
-            move_head(head_action_client, 0, 30)
-            move_head(head_action_client, 0, -30)
-            move_head(head_action_client, 0, 0)
+            # now functional on real robot.
+            move_head_new(head_action_client, 0, 0)
+            move_head_new(head_action_client, 30, 0)
+            move_head_new(head_action_client, -30, 0)
+            move_head_new(head_action_client, 0, 0)
+            move_head_new(head_action_client, 0, 30)
+            move_head_new(head_action_client, 0, -30)
+            move_head_new(head_action_client, 0, 0)
 
         # Demo sequence "rotate_base"
         elif args.demo == "rotate_base":
+            # now functional on real robot
             current_base_position = mobile_base.get_current_position_and_rotation()
             while(current_base_position[2] == None):
                 rospy.sleep(0.1)
@@ -875,6 +966,7 @@ if __name__ == '__main__':
 
         # Demo sequence "move_forward_and_back"
         elif args.demo == "move_forward_and_back":
+            # functional on real_robot
             current_base_position = mobile_base.get_current_position_and_rotation()
             while(current_base_position[2] == None):
                 rospy.sleep(0.1)
@@ -890,8 +982,21 @@ if __name__ == '__main__':
             final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
             move_base(Point(x=final_point_matrix[0], y=final_point_matrix[1]), degrees(current_base_position[2]))
 
+        elif args.demo == "go_to_point":
+            rospy.sleep(10)
+            analyze_picture_with_mediapipe()
+            image_converter.get_current_view(save=True, filename="real_human.jpg")
+            analyze_picture_with_alphapose()
+            analyze_picture_with_motionbert()
+            mobile_base.current_position_and_angle()
+            camera_info.find_distance_to_human(human_info.center_location)
+            [final_point_matrix, final_angle_in_degs] = find_final_point()
+            move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
+
 
         else:
+            if args.demo == "watch_human":
+                rospy.sleep(5)
             tries = 0
             while not rospy.is_shutdown() or not KeyboardInterrupt:
                 if not human_info.is_found() and tries >= 3:
@@ -905,7 +1010,7 @@ if __name__ == '__main__':
                 elif human_info.is_found() and human_info.is_centered() and args.demo == "":
                     tries = 0
                     rospy.loginfo("Human is in center of the camera view. Press ENTER to regognise pose and move robot...")
-                    i, o, e = select.select( [sys.stdin], [], [], 3)
+                    i, o, e = select.select( [sys.stdin], [], [], 1)
                     if (i):
                         sys.stdin.readline().strip() # Removes ENTER char to wait for it again next round
                         if args.debug:
@@ -921,10 +1026,9 @@ if __name__ == '__main__':
                 
                 # In demo "watch_human", robot only centers camera on human
                 elif human_info.is_found() and human_info.is_centered() and args.demo == "watch_human":
+                    # demo watch_human functional on real robot
                     tries = 0
                     rospy.loginfo("Human is in center of the camera view.")
-                    rospy.sleep(0.5)
-                    rospy.loginfo("Recentering camera on human...")
                 analyze_picture_with_mediapipe()
 
         rospy.spin()
