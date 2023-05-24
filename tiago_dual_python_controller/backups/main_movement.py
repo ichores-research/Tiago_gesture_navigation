@@ -41,8 +41,77 @@ ROT_Y_CALIBRATION = -30
 ROT_Y_STARTPOSE = 180
 ROT_Z_STARTPOSE = 180
 
+def transform_points_to_odom(final_point):
+    """
+    Function transforming location of human and the final point to odom coordinate system
+    Input: 
+        - final_point: Location3DJoint() object in MotionBERT human coordinate system
+    Output: 
+        - final_point_matrix: np.array() with coordinates of final point in odom coordinate system
+        - human_coordinates: np.array() with coordinates of human in odom coordinate system
+    """
+    final_point_matrix = np.array([[final_point.x], [final_point.y], [1]])
+    rot_matrix = get_rotation_matrix(-pi/2)
+    final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
+    print("Bod po rotaci do zakladny cloveka")
+    print(final_point_matrix)
+
+    # Distance from robot base to human extracted from depth image
+    distance_to_human = human_info.distance_from_robot
+    # Human coordinates in human coordinate system -> [0, 0, 1]
+    human_coordinates = np.array([[0], [0], [1]])
+    trans_matrix = get_translation_matrix(distance_to_human, 0)
+    final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
+    human_coordinates = np.matmul(trans_matrix, human_coordinates)
+    print("Finalni bod po translaci do zakladny robota")
+    print(final_point_matrix)
+    print("Pozice cloveka po translaci do zakladny robota")
+    print(human_coordinates)
+
+    # Rotation to match the orientation of odom coordinate system.
+    base_position_and_rotation = mobile_base.get_current_position_and_rotation()
+    head_joint_position = latest_joint_states.return_head_joints_positions()
+    trans_matrix = get_translation_matrix(base_position_and_rotation[0], base_position_and_rotation[1])
+    rot_matrix = get_rotation_matrix(base_position_and_rotation[2] + head_joint_position[0])
+    final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
+    human_coordinates = np.matmul(rot_matrix, human_coordinates)
+    print("Finalni bod po rotaci do souradneho systemu odom")
+    print(final_point_matrix)
+    print("Pozice cloveka po rotaci do souradneho systemu odom")
+    print(human_coordinates)
+
+    # Translation to odom coordinate system.
+    final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
+    human_coordinates = np.matmul(trans_matrix, human_coordinates)
+    rospy.loginfo("Final point after transformation to odom coordinate system:")
+    print(final_point_matrix)
+    rospy.loginfo("Human position after transformation to odom coordinate system:")
+    print(human_coordinates)
+    return [final_point_matrix, human_coordinates]
+
 def feedback_cb(msg):
     print("Zpetna vazba: %s" % msg)
+
+def convert_image_to_video():
+    """
+    Funkce ktera z obrazku vytvori sekundove video pro zpracovani pomoci MotionBERT
+    """
+    image_folder = "/home/guest/image_recog_results/"
+    video_name = 'human.mp4'
+
+    images = ["human.jpg"]
+    print(images)
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video = cv2.VideoWriter(image_folder + video_name, fourcc, 1, (width,height))
+
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+
+    cv2.destroyAllWindows()
+    video.release()
+    rospy.loginfo("Image converted to video...")
 
 def wait_for_valid_time(timeout):
     """Wait for a valid time (non-zero), this is important
@@ -242,7 +311,7 @@ if __name__ == '__main__':
         result = move_left_arm()
         print("Vysledek pohybu je: %s" % result)
         """
-        
+        #hand_left_action_client = create_action_client('/hand_left_controller/follow_joint_trajectory')
         group = init_cartesian_control_for_group("arm_left") #_torso
         #hand_point_gesture()
         moveit_cartesinan_planner(group, 0.6, 0.3, 0.8, 0, 0, 0) # base position

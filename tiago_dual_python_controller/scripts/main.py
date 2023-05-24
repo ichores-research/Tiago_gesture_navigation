@@ -506,6 +506,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
     else:
         rospy.loginfo("Started movement of robot to goal position with final rotation: \nposition_x: %s\nposition_y = %s\nrotation = %s" % 
                       (goal.x, goal.y, final_angle_in_degs))
+    
     while not rospy.is_shutdown() and not on_place:
 
         inc_x = goal.x - mobile_base.position_x
@@ -519,6 +520,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
             break
 
         angle_to_goal = atan2(inc_y, inc_x)
+        
 
         # If the robot does not face the required direction, rotate to match it
         if ((angle_to_goal - mobile_base.rotation > POSITION_AND_ORIENTATION_TOLERANCE 
@@ -862,7 +864,8 @@ def find_final_point():
     rospy.loginfo("Final angle for base to rotate to:\n%f" % final_angle_in_degs)
 
     # Promt that waits to confirm movement to final point by pressing ENTER
-    raw_input("Press ENTER to confirm movement to final point")
+    if args.demo == "go_to_point":
+        raw_input("Press ENTER to confirm movement to final point")
 
     return [final_point_matrix, final_angle_in_degs]
 
@@ -983,36 +986,42 @@ if __name__ == '__main__':
             move_base(Point(x=final_point_matrix[0], y=final_point_matrix[1]), degrees(current_base_position[2]))
 
         elif args.demo == "go_to_point":
+            # functional on real robot.
             rospy.sleep(10)
             analyze_picture_with_mediapipe()
+            center_camera_on_human()
             image_converter.get_current_view(save=True, filename="real_human.jpg")
             analyze_picture_with_alphapose()
             analyze_picture_with_motionbert()
-            mobile_base.current_position_and_angle()
             camera_info.find_distance_to_human(human_info.center_location)
+            mobile_base.current_position_and_angle()
             [final_point_matrix, final_angle_in_degs] = find_final_point()
             move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
 
-
         else:
+            centered_iterations = 0
             if args.demo == "watch_human":
                 rospy.sleep(5)
             tries = 0
             while not rospy.is_shutdown() or not KeyboardInterrupt:
                 if not human_info.is_found() and tries >= 3:
+                    centered_iterations = 0
                     tries = 0
                     find_human()
                 elif human_info.is_found() and not human_info.is_centered():
+                    centered_iterations = 0
                     tries = 0
                     center_camera_on_human()
                 elif not human_info.is_found():
+                    centered_iterations = 0
                     tries += 1
                 elif human_info.is_found() and human_info.is_centered() and args.demo == "":
                     tries = 0
+                    centered_iterations += 1
                     rospy.loginfo("Human is in center of the camera view. Press ENTER to regognise pose and move robot...")
-                    i, o, e = select.select( [sys.stdin], [], [], 1)
-                    if (i):
-                        sys.stdin.readline().strip() # Removes ENTER char to wait for it again next round
+                    # i, o, e = select.select( [sys.stdin], [], [], 1)
+                    if centered_iterations >= 10: # if (i):
+                        # sys.stdin.readline().strip() # Removes ENTER char to wait for it again next round
                         if args.debug:
                             image_converter.get_current_view(show=False, save=True, filename="human.jpg")
                         analyze_picture_with_alphapose()
@@ -1021,6 +1030,7 @@ if __name__ == '__main__':
                         camera_info.find_distance_to_human(human_info.center_location)
                         [final_point_matrix, final_angle_in_degs] = find_final_point()
                         move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
+                        centered_iterations = 0
                     else:
                         rospy.loginfo("Recentering on human...")
                 

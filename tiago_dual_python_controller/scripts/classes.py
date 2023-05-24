@@ -1,6 +1,8 @@
+import math
+
 H36M_JOINTS_DESC = ['root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle', 'torso', 'neck', 'nose', 'head', 'LShoulder', 'LElbow', 'LWrist', 'RShoulder', 'RElbow', 'RWrist']
 
-DATA_SCALE = 0.9 # MotionBERT returns joint position on z-axis between [0,2] -> scaling downt to human with height 1.8m
+DATA_SCALE = 0.9 # MotionBERT returns joint position on z-axis between [0,2] -> scaling down to human with height 1.8m
 
 class LocationPoint:
     """
@@ -44,7 +46,7 @@ class HumanInfo:
         """
         for joint in self.motionbert_joints_positions:
             coordinates = self.motionbert_joints_positions[joint]
-            print("%s:(%f, %f, %f)" %(joint, coordinates.x, coordinates.y, coordinates.z))
+            print("%s:  (%f, %f, %f)" %(joint, coordinates.x, coordinates.y, coordinates.z))
 
     def create_joints_dict(self):
         """
@@ -86,3 +88,11 @@ class HumanInfo:
             self.motionbert_joints_positions[joint].z -= center.z
             # We want to have up direction from ground to be in positive coordinates -> righthand coordinate system.
             self.motionbert_joints_positions[joint].z = -self.motionbert_joints_positions[joint].z
+
+        right_wrist = self.motionbert_joints_positions["RWrist"]
+        right_wrist.y = -abs(right_wrist.y) # hand is always in front of the human, not behind him
+
+        if abs(right_wrist.x) < 0.3:
+            right_wrist.y -= math.sqrt(math.pow(0.3, 2) - math.pow(right_wrist.x, 2))
+
+        self.clean_print_joints()
