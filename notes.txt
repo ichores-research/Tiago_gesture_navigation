@@ -1,0 +1,63 @@
+pred spustenim vzdy zadat do terminalu tento prikaz pro ruzne programy - nepouzivam ted
+	source /home/guest/tiago_dual_public_ws/src/setup.bash
+
+Pred spustenim simulace i skriptu spustit tzto dva prikazy
+	cd tiago_dual_public_ws/
+	source ./devel/setup.bash
+
+spusteni skriptu ktery jsem si napsal
+	rosrun python_control_testing_functions main_movement.py
+
+spusteni prazdneho prostredi v simulaci se provede timto prikazem
+	roslaunch tiago_dual_gazebo tiago_dual_gazebo.launch public_sim:=true world:=empty
+
+spusteni sumulace kancelare s objekty a prostredim
+	roslaunch tiago_dual_gazebo tiago_dual_gazebo.launch public_sim:=true			world:=tutorial_office gzpose:="-x 1.40 -y -2.79 -z -0.003 -R 0.0 -P 0.0 -Y 0.0"
+
+pro zobrazeni vsech aktualne bezicich topicu zadat
+	rostopic list
+
+pro zobrazeni informace o jednom topicu zadat
+	rostopic info /nazev/topicu
+
+pri simulaci je zasadni funkce wait_for_valid_time, bez te to nejde, pokud nepouzivam 
+akcni klienty
+
+pri zadavani bodu v trajektorii je parametr velocities myslena rychlost pruchodu danym bodem
+pokud chci aby se robot v danem miste zastavil, pak musi byt rovna nule
+
+pro oznaceni souboru jako spustitelny zadat 
+	sudo chmod +x main_movement.py
+
+pro registrovani noveho package v rosu zadat
+	catkin build
+
+kdyz nebude funogvat pip na nalezeni package, je dobry ho aktualizovat
+
+Pro spustění controlerru se všemi klouby spustit tento příkaz
+
+	rosrun rqt_joint_trajectory_controller rqt_joint_trajectory_controller
+
+pro zobrazení informací o určité zprávě, neboli její strukturu, stačí zadat:
+	rosmsg show <nazev_zpravy>
+
+Pro spusteni AlphaPose jsou aktualne platne prikazy ve envirometu alphapose:
+	
+	python scripts/demo_inference.py --cfg configs/halpe_26/resnet/256x192_res50_lr1e-3_1x.yaml --checkpoint pretrained_models/halpe26_fast_res50_256x192.pth --image examples/my_demo/step1.jpg --save_img
+	
+	python scripts/alphapose_image_server.py --debug True
+
+Pro spusteni MotionBERT je aktualni platny prikaz pro spusteni v enviromentu motionbert:
+	
+	python infer_wild.py --vid_path demo/video.mp4 --json_path demo/alphapose-results.json -o demo/res/ --config configs/pose3d/MB_ft_h36m_global_lite.yaml --clip_len 1
+
+	python motionbert_image_server.py --debug True
+
+Pro spusteni serveru pro rozpoznavani obrazu pomoci MediaPipe je aktualne platny prikaz v ROSu:
+	
+	rosrun python_control_testing_funcons mediapipe_image_server.py
+
+Pro spusteni hlavniho programu je aktualne platny prikaz v ROsu:
+	
+	rosrun python_control_testing_functions main.py --demo <nazev_dema>
+
