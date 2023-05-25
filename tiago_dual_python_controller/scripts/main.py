@@ -10,42 +10,36 @@ List of demo programs:
 - move_head: Program moves only the head of a robot, turns it to several positions and then back to the initial position
 - rotate_base: Robot rotates on place to 45 degrees to both directions and then to initial direction
 - move_forward_and_back: Robot moves 1 meter forwars, turns around, moves one meter back and turns back. 
-- watch_human - Robot tries to find human in its workspace, then tries to keep him in his field of view
+- watch_human: Robot tries to find human in its workspace, then tries to keep him in his field of view
+- robot_info: Prints to command line info about current robot position, orientation and speed in odom coordinate system
+- camera: Tests the image recognition with MediaPipe and if human is located in the picture, then AlphaPose and MotionBERT as well
+- go_to_point: Robot goes to found final point from image and stays there. No searching.
 """
 import rospy
 import cv2
 import threading
 import base64
-import sys
-import select
-import os
 import numpy as np
 import argparse
 
 from math import radians, degrees, atan2, sqrt, pow, pi, sin, cos
 
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from geometry_msgs.msg import Pose, Quaternion, Point, Twist, TransformStamped
-from std_msgs.msg import String
+from trajectory_msgs.msg import JointTrajectoryPoint
+from geometry_msgs.msg import Point, Twist
 from sensor_msgs.msg import Image, JointState, CameraInfo
-from control_msgs.msg import FollowJointTrajectoryAction, JointTolerance, FollowJointTrajectoryGoal
-
+from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryGoal
 from nav_msgs.msg import Odometry
 
 from actionlib.simple_action_client import SimpleActionClient
-from actionlib.action_client import ActionClient
 
 import tf
-from tf.transformations import quaternion_from_euler, euler_from_quaternion
+from tf.transformations import euler_from_quaternion
 from tf.listener import TransformListener
 
 from cv_bridge import CvBridge, CvBridgeError
 
 from image_share_service.service_client import ServiceClient
-from classes import LocationPoint, HumanInfo, Location3DJoint
-
-bridge = CvBridge()
-look_at_image = False
+from classes import HumanInfo, Location3DJoint
 
 # Dictionary of angle limit on certain robot joints, not used
 ROBOT_JOINTS_MAX_VALUES_RADIANS = {
@@ -60,7 +54,7 @@ LINEAR_MOVEMENT_SPEED = 0.2
 ANGULAR_MOVEMENT_SPEED = 0.5
 POSITION_AND_ORIENTATION_TOLERANCE = 0.1
 SPEED_TOLERANCE = 0.01
-HEAD_JOINT_ANGLE_LIMIT = 70
+HEAD_JOINT_ANGLE_LIMIT = 70 # in degrees
 
 class Camera:
     """
@@ -384,7 +378,7 @@ def create_action_client(action_topic_interface_string):
     return action_client
 
 
-def move_head_new(head_action_client, head_1_joint_degrees, head_2_joint_degrees, wait_for_result=True):
+def move_head(head_action_client, head_1_joint_degrees, head_2_joint_degrees, wait_for_result=True):
     """
     Function for controlling the head of the robot, its rotation in both of its joints to given angle.
 
@@ -426,50 +420,6 @@ def move_head_new(head_action_client, head_1_joint_degrees, head_2_joint_degrees
             rospy.logerr("Error while rotating head joints!")
 
 
-def move_head(head_action_client, head_1_joint_degrees, head_2_joint_degrees, wait_for_result=True):
-    """
-    Function for controlling the head of the robot, its rotation in both of its joints to given angle.
-
-    There are two joints in the head, input values of desired final angle are inputed in degrees
-    Inputs: 
-        - head_1_joint: horizontal rotation, measured from looking straight forward, positive direction while rotating left
-        - head_2_joint: vertical rotation, measured from looking straight forward, positive direction while rotating up
-        - wait_for_result: if False, we dont wait for robot to finish rotating head and we continue to execute program
-    Use example:
-        move_head(head_action_client, 45, 0, wait_for_result=True)
-    """
-
-    # First we set the trajectory, one point in our case for robot to rotate to.
-    trajektorie = JointTrajectory()
-    trajektorie.header.frame_id = "head_movement"
-    trajektorie.header.seq += 1
-    trajektorie.header.stamp = rospy.Time().now()
-    trajektorie.joint_names = ["head_1_joint","head_2_joint"]
-    trajektorie.points = [JointTrajectoryPoint()]
-    trajektorie.points[0].positions = [radians(head_1_joint_degrees), radians(head_2_joint_degrees)]
-    trajektorie.points[0].velocities = [0.0] * 2
-    trajektorie.points[0].time_from_start = rospy.Duration(1,0)
-
-    # We set the created trajectory as our goal
-    cil = FollowJointTrajectoryGoal()
-    cil.trajectory = trajektorie
-    cil.goal_time_tolerance = rospy.Duration(0,0)
-
-    # sending goal to created action client
-    rospy.loginfo(cil)
-    rospy.loginfo("Rotated head to required joint angles:\nhead_1_joint:%f\nhead_2_joint: %f" % (head_1_joint_degrees, head_2_joint_degrees))
-    head_action_client.send_goal(cil, feedback_cb=feedback_cb)
-
-    # if we want to wait for the end of head rotation, we wait
-    if wait_for_result:
-        head_action_client.wait_for_result(rospy.Duration(10,0))
-        result = head_action_client.get_result()
-        if result:
-            rospy.loginfo("Head movement successfully completed!")
-        else:
-            rospy.logerr("Error while rotating head joints!")
-
-
 def move_base(goal, final_angle_in_degs, on_place=False):
     """
     Function for moving mobile base around the workspace via velocity commands.
@@ -491,6 +441,7 @@ def move_base(goal, final_angle_in_degs, on_place=False):
         final_angle_in_degs -= 360
     elif final_angle_in_degs < -180:
         final_angle_in_degs += 360
+    
     # First we try to get to desired goal by using a simple controller.
     # If on_place, we skip the movement part of this process and only rotate to desired angle.
 
@@ -684,22 +635,22 @@ def find_human():
         if step == 0 and (abs(latest_joint_states.return_head_joints_positions()[0]) > 0.01 or abs(latest_joint_states.return_head_joints_positions()[0]) > 0.01):
             head_position = latest_joint_states.return_head_joints_positions()
             base_rotation = base_rotation + head_position[0]
-            move_head_new(head_action_client, 0, 0, wait_for_result=False)
+            move_head(head_action_client, 0, 0, wait_for_result=False)
             move_base(Point(), degrees(base_rotation), on_place=True)
         elif step == 1:
-            move_head_new(head_action_client, 45, 0)
+            move_head(head_action_client, 45, 0)
         elif step == 2:
-            move_head_new(head_action_client, -45, 0)
+            move_head(head_action_client, -45, 0)
         elif step == 3:
             move_base(Point(), degrees(base_rotation)-135, on_place=True)
         elif step == 4:
-            move_head_new(head_action_client, 0, 0)
+            move_head(head_action_client, 0, 0)
         elif step == 5:
-            move_head_new(head_action_client, 45, 0)
+            move_head(head_action_client, 45, 0)
         elif step == 6:
             move_base(Point(), degrees(base_rotation)+90, on_place=True)
         elif step == 7:
-            move_head_new(head_action_client, 0, 0)
+            move_head(head_action_client, 0, 0)
         elif step == 8:
             move_base(Point(), degrees(base_rotation), on_place=True)
             step = 0
@@ -728,9 +679,9 @@ def center_camera_on_human():
 
     # if the human is to close to the limit of head joint rotation, rotate the base to human.
     if abs(final_head_hor_angle) < HEAD_JOINT_ANGLE_LIMIT:
-        move_head_new(head_action_client, final_head_hor_angle, final_head_ver_angle)
+        move_head(head_action_client, final_head_hor_angle, final_head_ver_angle)
     elif abs(final_head_hor_angle) >= HEAD_JOINT_ANGLE_LIMIT:
-        move_head_new(head_action_client, 0, final_head_ver_angle, wait_for_result=False)
+        move_head(head_action_client, 0, final_head_ver_angle, wait_for_result=False)
         move_base(Point(), degrees(mobile_base.rotation) + final_head_hor_angle, on_place=True)
 
     head_joints_positions = latest_joint_states.return_head_joints_positions()
@@ -879,7 +830,7 @@ def move_robot_to_final_point(final_point_matrix, final_angle_in_degs):
     Result: Robot reaches desired point
     """
     rospy.loginfo("Moving robot to final point position:\nx = %f\ny = %f...")
-    move_head_new(head_action_client, 0, 0, wait_for_result=False)
+    move_head(head_action_client, 0, 0, wait_for_result=False)
     move_base(Point(x = final_point_matrix[0], y=final_point_matrix[1]), final_angle_in_degs)
 
 if __name__ == '__main__':
@@ -947,13 +898,13 @@ if __name__ == '__main__':
         # Demo sequence "move_head"
         elif args.demo == "move_head":
             # now functional on real robot.
-            move_head_new(head_action_client, 0, 0)
-            move_head_new(head_action_client, 30, 0)
-            move_head_new(head_action_client, -30, 0)
-            move_head_new(head_action_client, 0, 0)
-            move_head_new(head_action_client, 0, 30)
-            move_head_new(head_action_client, 0, -30)
-            move_head_new(head_action_client, 0, 0)
+            move_head(head_action_client, 0, 0)
+            move_head(head_action_client, 30, 0)
+            move_head(head_action_client, -30, 0)
+            move_head(head_action_client, 0, 0)
+            move_head(head_action_client, 0, 30)
+            move_head(head_action_client, 0, -30)
+            move_head(head_action_client, 0, 0)
 
         # Demo sequence "rotate_base"
         elif args.demo == "rotate_base":
@@ -1018,7 +969,7 @@ if __name__ == '__main__':
                 elif human_info.is_found() and human_info.is_centered() and args.demo == "":
                     tries = 0
                     centered_iterations += 1
-                    rospy.loginfo("Human is in center of the camera view. Press ENTER to regognise pose and move robot...")
+                    rospy.loginfo("Human is in center of the camera view...")
                     # i, o, e = select.select( [sys.stdin], [], [], 1)
                     if centered_iterations >= 10: # if (i):
                         # sys.stdin.readline().strip() # Removes ENTER char to wait for it again next round

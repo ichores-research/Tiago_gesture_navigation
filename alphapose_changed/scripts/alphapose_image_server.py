@@ -412,7 +412,21 @@ def process_image(received_data):
     # Write the result to json:
     json_results = demo.writeJson(result, outputpath, form=args.format, for_eval=args.eval, save_json=args.debug)
 
-    received_data["json_results"] = json_results
+    results_score = []
+    for res in json_results:
+        results_score.append(res["score"])
+
+    max_score = max(results_score)
+    max_index = results_score.index(max_score)
+    #print(max_index)
+
+    new_results = []
+    for res in json_results:
+        if res["score"] == max_score:
+            new_results.append(res)
+ 
+
+    received_data["json_results"] = new_results
 
 if __name__ == "__main__":
 

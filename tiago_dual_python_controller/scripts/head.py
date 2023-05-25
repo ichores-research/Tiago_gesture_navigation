@@ -1,7 +1,12 @@
 #! /usr/bin/env python
 
+"""
+Standalone script for testing head movement.
+"""
+
 from __future__ import print_function
 
+import sys
 import rospy
 
 # Brings in the SimpleActionClient
@@ -18,7 +23,6 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 def client():
     # Creates the SimpleActionClient, passing the type of the action
-    # (FibonacciAction) to the constructor.
     client = SimpleActionClient('/head_controller/follow_joint_trajectory', FollowJointTrajectoryAction)
 
     # Waits until the action server has started up and started
@@ -50,7 +54,7 @@ if __name__ == '__main__':
     try:
         # Initializes a rospy node so that the SimpleActionClient can
         # publish and subscribe over ROS.
-        rospy.init_node('fibonacci_client_py')
+        rospy.init_node('head_client_py')
         result = client()
         print("Result:", result)
     except rospy.ROSInterruptException:
