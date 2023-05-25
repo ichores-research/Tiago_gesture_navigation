@@ -13,7 +13,8 @@ This is a repository to bachelor thesis on working with humanoid robot TIAGo++ u
 
 - [motionbert_changed](motionbert_changed): Folder with files from original [MotionBERT](https://github.com/Walter0807/MotionBERT) repository, which were changed to make the data processing repetable.
 
-- [image_share_service](image_share_service): Folder containing classes used for comunicating accros running scripts via LAN, used for data transfer
+- [image_share_service](alphapose_changed/scripts/image_share_service): Folder containing classes used for comunicating accros running scripts via LAN, used for data transfer
+- [full_visualization_results](full_visualization_results): Folder vith results of image processing from simulation and a real world
 
 
 ## Installation and requirements
