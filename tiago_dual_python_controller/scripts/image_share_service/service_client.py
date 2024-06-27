@@ -72,7 +72,7 @@ class ServiceClient():
         self.__lock.acquire()
         try:
             # 1) pickle and send the request
-            self._zmq_client.send(cpl.dumps(request))
+            self._zmq_client.send(cpl.dumps(request, protocol=4))
         except zmq.Again:  # timeout when sending (should not happen, unless ZMQ error)
             self._reconnect()
         else:

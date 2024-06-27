@@ -41,13 +41,16 @@ from cv_bridge import CvBridge, CvBridgeError
 from image_share_service.service_client import ServiceClient
 from classes import HumanInfo, Location3DJoint
 
+from object_detector_msgs.srv import detectron2_service_server, estimate_poses
+from sensor_msgs.msg import Image
+
 # Dictionary of angle limit on certain robot joints, not used
 ROBOT_JOINTS_MAX_VALUES_RADIANS = {
     "head_1_joint": (-1.24, 1.24),
     "head_2_joint": (-0.98, 0.72),
 }
 
-OUT_PATH = "/home/guest/image_recog_results/"
+OUT_PATH = "/home/student/Pictures/"
 
 # Definitions of speed of the movement of the robot base
 LINEAR_MOVEMENT_SPEED = 0.2
@@ -88,9 +91,9 @@ class Camera:
         pixel_y = int(round(human_center_location.y * self.h_))
         
         # Reading distance data on position of the center of human in depth image.
-        depth_image_message = rospy.wait_for_message("/xtion/depth_registered/image_raw", Image)
+        depth_image_message = rospy.wait_for_message("/xtion/depth/image_raw", Image)
         depth_image = image_converter.bridge.imgmsg_to_cv2(depth_image_message, desired_encoding="passthrough")
-        print(depth_image)
+        # print(depth_image)
         distance = depth_image[pixel_y][pixel_x]
 
         # Camera coordinate frame offset in 2D from base_link
@@ -336,6 +339,12 @@ class BasePositionWithOrientation():
         return position_and_orientation
 
 
+class GDRNet():
+    """
+    """
+    def __init__(self):
+        self.objects = []
+
 def parse_args():
     """
     Function for parsing launch arguments
@@ -355,6 +364,54 @@ def feedback_cb(msg):
     rospy.loginfo("Received message: \n%s" % msg)
     rospy.sleep(0.2)
 
+
+def detect_gdrn(rgb):
+    rospy.wait_for_service('detect_objects')
+    try:
+        detect_objects = rospy.ServiceProxy('detect_objects', detectron2_service_server)
+        response = detect_objects(rgb)
+        return response.detections.detections
+    except rospy.ServiceException as e:
+        print("Service call failed: %s" % e)
+
+
+def estimate_gdrn(rgd, depth, detection):
+    rospy.wait_for_service('estimate_poses')
+    try:
+        estimate_pose = rospy.ServiceProxy('estimate_poses', estimate_poses)
+        response = estimate_pose(detection, rgd, depth)
+        return response.poses
+    except rospy.ServiceException as e:
+        print("Service call failed: %s" % e)
+
+
+def process_gdrn_output(gdrn):
+    """
+    Function to process gdrn output from list -> dict
+    """
+    ret = dict()
+    gdrn = str(gdrn)
+    name_idx = gdrn.find("name")
+    pose_idx = gdrn.find("pose")
+    position_idx = gdrn.find("position")
+    orient_idx = gdrn.find("orientation")
+    conf_indx = gdrn.find("confidence")
+    ret["name"] = gdrn[name_idx+len("name:  "):pose_idx-2]
+    ret["score"] = float(gdrn[conf_indx+len("confidence: "):-1])
+    position = gdrn[position_idx+len("position: "):orient_idx-1]
+    orient = gdrn[orient_idx+len("orientation: "):conf_indx-2]
+    p_x = position.find("x")
+    p_y = position.find("y")
+    p_z = position.find("z")
+    o_x = orient.find("x")
+    o_y = orient.find("y")
+    o_z = orient.find("z")
+    o_w = orient.find("w")
+    ret["position"] = [float(position[p_x+len("x: "):p_y]), float(position[p_y+len("y: "):p_z]), float(position[p_z+len("z: "):-1])]
+    ret["orientation"] = [float(orient[o_x+len("x: "):o_y]), float(orient[o_y+len("y: "):o_z]), float(orient[o_z+len("z: "):o_w]), float(orient[o_w+len("w: "):-1])]
+    print("Detected %s" % ret["name"])
+    return ret
+    
 
 def create_action_client(action_topic_interface_string):
     """
@@ -587,9 +644,12 @@ def analyze_picture_with_alphapose():
     }
     # Sending data to AlphaPose image server, waits for response and saves the result
     response = alphapose_image_service_client.call(data)
-    human_info.alphapose_json_result = response["json_results"]
-    rospy.loginfo("Analysis of pose via AlphaPose finished. Results:")
-    print(human_info.alphapose_json_result)
+    try:
+        human_info.alphapose_json_result = response["json_results"]
+        rospy.loginfo("Analysis of pose via AlphaPose finished. Results:")
+        # print(human_info.alphapose_json_result)
+    except:
+        rospy.logerr("Analysis of pose via Alphapose returned error")
 
 
 def analyze_picture_with_motionbert():
@@ -607,7 +667,28 @@ def analyze_picture_with_motionbert():
     human_info.motionbert_joints_positions = response["human_joints_positions"]
     rospy.loginfo("Analysis of pose via MotionBERT finished. Results:")
     rospy.loginfo(human_info.motionbert_joints_positions)
-    
+
+
+def analyze_picture_with_gdrnet():
+    """
+    Function that uses gdrnet ros service to get positions of objetcs, if any
+    """
+    rospy.loginfo("Zahajeni analyzy obrazu pomoci gdrnet...")
+    rgb = rospy.wait_for_message(rospy.get_param('pose_estimator/color_topic'), Image)
+    depth = rospy.wait_for_message(rospy.get_param('/pose_estimator/depth_topic'), Image)
+    rospy.loginfo("Perform detection with YOLOv5...")
+    detections = detect_gdrn(rgb)
+    rospy.loginfo("...received detection.")
+    if detections is None or len(detections) == 0:
+        rospy.loginfo("Nothing detected")
+    else:
+        rospy.loginfo("Perform pose estimation with GDR-Net++ ...")
+        for detection in detections:
+            instance_pose = estimate_gdrn(rgb, depth, detection)
+            gdrnet_info.objects.append(process_gdrn_output(instance_pose))
+            # print(f"Got pose for: {instance_pose}")
+            
+
 
 def find_human():
     """
@@ -661,6 +742,7 @@ def find_human():
         tries = 0
         while(not human_info.is_found() and tries < 3):
             analyze_picture_with_mediapipe(step)
+            analyze_picture_with_alphapose()
             tries += 1
 
         step += 1
@@ -710,7 +792,32 @@ def get_point_on_ground(right_shoulder, right_wrist):
         y = right_shoulder.y - (right_shoulder.z/vector.z)*vector.y,
         z = 0
     )
-    rospy.loginfo("Final point coordinates:\nx = %f\ny = %f\nz = %f)" %(final_point.x, final_point.y, final_point.z))
+    rospy.loginfo("Final point coordinates:\tx = %f, y = %f, z = %f" %(final_point.x, final_point.y, final_point.z))
+    return final_point
+
+
+def get_point_on_height(right_shoulder, right_wrist, height):
+    """
+    Funcion that computes the intersection of line between right shoulder and right wrist
+    with table at height in the MotionBERT human coordiante system
+    Inputs:
+        - right_shoulder: Location3DJoint() object with positional data
+        - right_wrist: Location3DJoint() object with positional data
+        - height: int Z height of table (from gdrnet detection)
+    Output:
+        - vector: Location3DJoint() object with positional data
+    """
+    vector = Location3DJoint(
+        x = right_wrist.x - right_shoulder.x,
+        y = right_wrist.y - right_shoulder.y,
+        z = right_wrist.z - right_shoulder.z
+    )
+    final_point = Location3DJoint(
+        x = right_shoulder.x - (height-right_shoulder.z)/vector.z*vector.x,
+        y = right_shoulder.y - (height-right_shoulder.z)/vector.z*vector.y,
+        z = height
+    )
+    rospy.loginfo("Final point coordinates:\tx = %f, y = %f, z = %f" %(final_point.x, final_point.y, final_point.z))
     return final_point
 
 
@@ -745,7 +852,7 @@ def get_translation_matrix(x, y):
     ])
 
 
-def transform_points_to_odom(final_point):
+def transform_points_to_odom(final_point, gdrn=False):
     """
     Function transforming location of human and the final point to odom coordinate system
     Input: 
@@ -755,7 +862,7 @@ def transform_points_to_odom(final_point):
         - human_coordinates: np.array() with coordinates of human in odom coordinate system
     """
     # First, we rotate the coordinate system of human from MotionBERT to match base_link coordinate system
-    final_point_matrix = np.array([[final_point.x], [final_point.y], [1]])
+    final_point_matrix = np.array([[final_point.x], [final_point.y], [final_point.z]]) # change z value to 1
     rot_matrix = get_rotation_matrix(-pi/2)
     final_point_matrix = np.matmul(rot_matrix, final_point_matrix)
 
@@ -779,10 +886,23 @@ def transform_points_to_odom(final_point):
     trans_matrix = get_translation_matrix(base_position_and_rotation[0], base_position_and_rotation[1])
     final_point_matrix = np.matmul(trans_matrix, final_point_matrix)
     human_coordinates = np.matmul(trans_matrix, human_coordinates)
+    
     rospy.loginfo("Final point after transformation to odom coordinate system:")
     print(final_point_matrix)
     rospy.loginfo("Human position after transformation to odom coordinate system:")
     print(human_coordinates)
+
+    if gdrn:
+        for i in range(len(gdrnet_info.objects)):
+            object_matrix = np.array([[gdrnet_info.objects[i]["position"][0]],[gdrnet_info.objects[i]["position"][1]],[gdrnet_info.objects[i]["position"][2]]])
+            object_matrix = np.matmul(get_rotation_matrix(-pi/2),object_matrix)
+            object_matrix = np.matmul(get_translation_matrix(distance_to_human,0),object_matrix)
+            object_matrix = np.matmul(rot_matrix,object_matrix)
+            object_matrix = np.matmul(trans_matrix, object_matrix)
+            rospy.loginfo("%s position after transformation to odom coordinate system" % gdrnet_info.objects[i]["name"])
+            print(object_matrix)
+            gdrnet_info.objects[i]["odom"] = object_matrix
+            gdrnet_info.objects[i]["dist"] = np.linalg.norm(final_point_matrix[0][0:1]-object_matrix[0][0:1])
     return [final_point_matrix, human_coordinates]
 
 
@@ -796,7 +916,7 @@ def find_final_point():
     rospy.loginfo("Creating dictionary of found human joint positions...")
     human_info.create_joints_dict()
 
-    rospy.loginfo("Moving oroign of human coordinate system...")
+    rospy.loginfo("Moving origin of human coordinate system...")
     human_info.change_reference_of_joints()
 
     rospy.loginfo("Computing intersection of the indicated direction of hand with ground...")
@@ -815,11 +935,35 @@ def find_final_point():
     rospy.loginfo("Final angle for base to rotate to:\n%f" % final_angle_in_degs)
 
     # Promt that waits to confirm movement to final point by pressing ENTER
-    if args.demo == "go_to_point":
-        raw_input("Press ENTER to confirm movement to final point")
-
+    # if args.demo == "go_to_point":
+        # raw_input("Press ENTER to confirm movement to final point")
+        
     return [final_point_matrix, final_angle_in_degs]
 
+
+def find_pointing():
+    """
+    Function that finds point where human is pointing and calculates
+    distances from detected objects to that point.
+
+    Output:
+        - closest object dict() gdrn_info.object
+    """
+    rospy.loginfo("find_pointing")
+    # make avegare height from gdrnet
+    height = 0.0
+    for obj in gdrnet_info.objects:
+        height += obj["position"][2]
+    height = round(height/len(gdrnet_info.objects),4)
+    print(height)
+    human_info.create_joints_dict()
+    human_info.clean_print_joints()
+    # human_info.change_reference_of_joints()
+    right_shoulder = human_info.motionbert_joints_positions["RShoulder"]
+    right_wrist = human_info.motionbert_joints_positions["RWrist"]
+    final_point = get_point_on_height(right_shoulder, right_wrist,height)
+    [final_point_matrix, human_coordinates] = transform_points_to_odom(final_point,gdrn=True)
+    return min(gdrnet_info.objects,key= lambda x: x["dist"])
 
 def move_robot_to_final_point(final_point_matrix, final_angle_in_degs):
     """
@@ -846,6 +990,7 @@ if __name__ == '__main__':
         latest_joint_states = LatestJointStates()
         human_info = HumanInfo()
         camera_info = Camera()
+        gdrnet_info = GDRNet()
 
         # Creating clients to different scripts (image processing)
         mediapipe_image_service_client = ServiceClient()
@@ -884,8 +1029,9 @@ if __name__ == '__main__':
             analyze_picture_with_mediapipe()
             image_converter.get_current_view(save=True, filename="real_human.jpg")
             if human_info.is_found():
-                #image_converter.get_current_view(show=True)
+                # image_converter.get_current_view(show=True)
                 analyze_picture_with_alphapose()
+                # input("Press ENTER to confirm movement to final point")
                 analyze_picture_with_motionbert()
 
         elif args.demo == "robot_info":
@@ -947,8 +1093,25 @@ if __name__ == '__main__':
             camera_info.find_distance_to_human(human_info.center_location)
             mobile_base.current_position_and_angle()
             [final_point_matrix, final_angle_in_degs] = find_final_point()
-            move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
+            #move_robot_to_final_point(final_point_matrix, final_angle_in_degs)
 
+        elif args.demo == "pointing":
+            rospy.sleep(5)
+            analyze_picture_with_gdrnet()
+            rospy.sleep(2)
+            analyze_picture_with_mediapipe()
+            rospy.loginfo("Human found, analyzing where human is pointing...")
+            if human_info.is_found():
+                analyze_picture_with_alphapose()
+                analyze_picture_with_motionbert()
+                camera_info.find_distance_to_human(human_info.center_location)
+                mobile_base.current_position_and_angle()
+                closest_obj = find_pointing()
+                rospy.loginfo("Detected object on which human is pointing is: %s" % closest_obj["name"])
+                for obj in gdrnet_info.objects:
+                    print("name: %s, dist: %f" % (obj["name"], obj["dist"]))
+            else:
+                rospy.logwarn("No human found, make sure there is one")
         else:
             centered_iterations = 0
             if args.demo == "watch_human":
@@ -976,7 +1139,7 @@ if __name__ == '__main__':
                         if args.debug:
                             image_converter.get_current_view(show=False, save=True, filename="human.jpg")
                         analyze_picture_with_alphapose()
-                        analyze_picture_with_motionbert()
+                        # analyze_picture_with_motionbert()
                         mobile_base.current_position_and_angle()
                         camera_info.find_distance_to_human(human_info.center_location)
                         [final_point_matrix, final_angle_in_degs] = find_final_point()
